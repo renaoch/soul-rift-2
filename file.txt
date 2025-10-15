@@ -1,0 +1,813 @@
+
+## **API ENDPOINTS CHECKLIST**
+
+---
+
+## **1. AUTHENTICATION APIs**
+
+### **POST /api/auth/signup**
+**Parameters:**
+- email (required)
+- password (required)
+- username (required, unique)
+- first_name
+- last_name
+- phone
+- role (default: 'customer', options: 'customer', 'artist')
+
+**Logic:**
+- Validate email format
+- Check username uniqueness
+- Hash password with bcrypt
+- Create user in `users` table
+- Generate JWT token
+- Return user object + token
+
+***
+
+### **POST /api/auth/login**
+**Parameters:**
+- email (required)
+- password (required)
+
+**Logic:**
+- Find user by email
+- Verify password hash
+- Generate JWT token
+- Return user object + token
+
+***
+
+### **POST /api/auth/logout**
+**Parameters:**
+- JWT token in header
+
+**Logic:**
+- Invalidate JWT token
+- Clear session
+
+***
+
+### **GET /api/auth/me**
+**Parameters:**
+- JWT token in header
+
+**Logic:**
+- Decode JWT
+- Fetch user details from `users` table
+- If artist, also fetch from `artist_profiles`
+- Return user object
+
+***
+
+## **2. ARTIST MANAGEMENT APIs**
+
+### **POST /api/artists/apply**
+**Parameters:**
+- display_name (required)
+- bio (required)
+- portfolio_url
+- instagram_handle
+- twitter_handle
+- JWT token in header
+
+**Logic:**
+- Check if user already has artist profile
+- Create record in `artist_profiles` (is_verified = false)
+- Send notification to admin
+- Return artist profile object
+
+***
+
+### **PUT /api/artists/profile**
+**Parameters:**
+- display_name
+- bio
+- portfolio_url
+- instagram_handle
+- twitter_handle
+- banner_image (file upload)
+- JWT token in header
+
+**Logic:**
+- Verify user owns this artist profile
+- Upload banner to Supabase Storage `avatars/{user_id}/banner.jpg`
+- Update `artist_profiles` table
+- Return updated profile
+
+***
+
+### **GET /api/artists/:username**
+**Parameters:**
+- username (URL param)
+- Optional: page, limit (for pagination)
+
+**Logic:**
+- Find artist by username
+- Fetch artist_profiles data
+- Fetch designs (where is_public = true)
+- Fetch collections
+- Return artist profile + designs + stats
+
+***
+
+### **POST /api/artists/:artist_id/follow**
+**Parameters:**
+- artist_id (URL param)
+- JWT token in header
+
+**Logic:**
+- Check if already following
+- Insert into `artist_followers`
+- Increment `artist_profiles.follower_count`
+- Send notification to artist via Supabase Realtime
+- Return follow status
+
+***
+
+### **DELETE /api/artists/:artist_id/unfollow**
+**Parameters:**
+- artist_id (URL param)
+- JWT token in header
+
+**Logic:**
+- Delete from `artist_followers`
+- Decrement `artist_profiles.follower_count`
+- Return unfollow status
+
+***
+
+### **GET /api/artists/:artist_id/earnings**
+**Parameters:**
+- artist_id (URL param)
+- date_from (optional)
+- date_to (optional)
+- status (optional: 'pending', 'processing', 'paid')
+- JWT token in header
+
+**Logic:**
+- Verify user owns this artist profile
+- Query `artist_earnings` table with filters
+- Group by month/week
+- Calculate totals
+- Return earnings breakdown
+
+***
+
+### **GET /api/artists/:artist_id/dashboard**
+**Parameters:**
+- artist_id (URL param)
+- JWT token in header
+
+**Logic:**
+- Verify ownership
+- Fetch total_earnings, total_sales, follower_count
+- Fetch recent orders with artist's designs
+- Fetch design analytics (views, likes, uses)
+- Fetch pending payouts
+- Return dashboard data
+
+***
+
+## **3. DESIGN MANAGEMENT APIs**
+
+### **POST /api/designs/upload**
+**Parameters:**
+- title (required)
+- description
+- category_id
+- tags[] (array)
+- design_file (file upload, required)
+- width_inches
+- height_inches
+- placement_sku (default: 'fr')
+- is_public (default: true)
+- JWT token in header
+
+**Logic:**
+- Verify user is artist
+- Generate unique design_code (UUID or custom)
+- Upload file to Supabase Storage `designs/{artist_id}/original/{design_code}.png`
+- Get public URL from Supabase
+- Generate thumbnail using Supabase transformations (400x400)
+- Optional: Call OpenAI Vision API for quality check
+- Insert into `designs` table (is_approved = false)
+- Return design object
+
+***
+
+### **GET /api/designs/:design_id**
+**Parameters:**
+- design_id (URL param)
+
+**Logic:**
+- Fetch design from `designs` table
+- Increment view_count
+- Fetch artist info
+- Check if user liked this design
+- Return design object + artist
+
+***
+
+### **PUT /api/designs/:design_id**
+**Parameters:**
+- design_id (URL param)
+- title
+- description
+- category_id
+- tags[]
+- is_public
+- JWT token in header
+
+**Logic:**
+- Verify artist owns this design
+- Update `designs` table
+- Return updated design
+
+***
+
+### **DELETE /api/designs/:design_id**
+**Parameters:**
+- design_id (URL param)
+- JWT token in header
+
+**Logic:**
+- Verify artist owns this design
+- Check if design used in active orders
+- If yes, mark as hidden instead of deleting
+- If no, delete from Supabase Storage + database
+- Return deletion status
+
+***
+
+### **POST /api/designs/:design_id/like**
+**Parameters:**
+- design_id (URL param)
+- JWT token in header
+
+**Logic:**
+- Check if already liked
+- Insert into `design_likes`
+- Increment `designs.like_count`
+- Send notification to artist
+- Return like status
+
+***
+
+### **DELETE /api/designs/:design_id/unlike**
+**Parameters:**
+- design_id (URL param)
+- JWT token in header
+
+**Logic:**
+- Delete from `design_likes`
+- Decrement `designs.like_count`
+- Return unlike status
+
+***
+
+### **GET /api/designs/search**
+**Parameters:**
+- query (search term)
+- category_id (optional)
+- tags[] (optional)
+- sort_by (options: 'trending', 'recent', 'popular')
+- page, limit
+
+**Logic:**
+- Use Postgres full-text search on title + description
+- Filter by category, tags, is_approved = true, is_public = true
+- Sort by view_count (trending), created_at (recent), like_count (popular)
+- Return paginated designs
+
+***
+
+### **GET /api/designs/trending**
+**Parameters:**
+- limit (default: 20)
+
+**Logic:**
+- Fetch designs with highest view_count in last 7 days
+- WHERE is_approved = true AND is_public = true
+- Return designs with artist info
+
+***
+
+## **4. PRODUCT MANAGEMENT APIs**
+
+### **GET /api/products**
+**Parameters:**
+- page, limit
+- product_type (optional: 't-shirt', 'hoodie', 'mug')
+- size (optional)
+- color (optional)
+
+**Logic:**
+- Fetch from `products` table WHERE is_active = true
+- Apply filters
+- Return paginated products
+
+***
+
+### **GET /api/products/:product_id**
+**Parameters:**
+- product_id (URL param)
+
+**Logic:**
+- Fetch product details
+- Fetch associated designs from `product_designs`
+- Fetch artist info for each design
+- Return product + designs + artists
+
+***
+
+### **POST /api/products** (Admin only)
+**Parameters:**
+- name (required)
+- description
+- base_price (required, from QikInk)
+- selling_price (required)
+- sku (required, QikInk SKU)
+- size
+- color
+- material
+- product_type
+- JWT token in header
+
+**Logic:**
+- Verify user is admin
+- Calculate profit_margin (selling_price - base_price)
+- Insert into `products` table
+- Return product object
+
+***
+
+### **POST /api/products/:product_id/designs**
+**Parameters:**
+- product_id (URL param)
+- design_id (required)
+- placement_sku (required: 'fr', 'bk')
+- placement_name
+- JWT token in header
+
+**Logic:**
+- Verify design exists and is approved
+- Get artist_id from design
+- Insert into `product_designs`
+- Return association status
+
+***
+
+## **5. ORDER MANAGEMENT APIs**
+
+### **POST /api/orders/create**
+**Parameters:**
+- items[] (array of objects):
+  - product_id
+  - design_id
+  - quantity
+  - sku
+- shipping_address:
+  - first_name
+  - last_name
+  - address1
+  - address2
+  - phone
+  - email
+  - city
+  - zip
+  - province
+  - country_code
+- gateway ('COD', 'Razorpay', 'Stripe')
+- JWT token in header
+
+**Logic:**
+1. **Validate items** - check product + design exists
+2. **Calculate financials** for each item:
+   - Fetch product base_price, selling_price
+   - Fetch artist commission_rate
+   - Calculate: `platform_profit = selling_price - base_price`
+   - Calculate: `artist_commission = platform_profit * (commission_rate / 100)`
+   - Calculate: `final_platform_revenue = platform_profit - artist_commission`
+3. **Create order**:
+   - Generate unique order_number
+   - Calculate total_order_value (sum of all item prices)
+   - Calculate total_artist_commission (sum of all artist commissions)
+   - Insert into `orders` table
+4. **Create order_items**:
+   - Insert each item with financial breakdown
+5. **Create order_item_designs**:
+   - Snapshot design URLs (in case artist deletes later)
+6. **Create shipping_address**:
+   - Insert shipping details
+7. **Create artist_earnings**:
+   - For each item with artist, insert into `artist_earnings` (status: 'pending')
+8. **Queue QikInk order**:
+   - Call Supabase Edge Function to send to QikInk API
+9. **Return order object** with order_number
+
+***
+
+### **POST /api/orders/:order_id/qikink** (Edge Function)
+**Parameters:**
+- order_id (URL param)
+
+**Logic:**
+1. Fetch order details from database
+2. Format data for QikInk API:
+   - Map order_number
+   - Map line_items with SKU, designs, quantities
+   - Map shipping_address
+3. Call QikInk API `POST /api/order/create`
+4. Receive qikink_order_id from response
+5. Update `orders` table with qikink_order_id
+6. Update order_status to 'processing'
+7. Return QikInk response
+
+***
+
+### **GET /api/orders/:order_number**
+**Parameters:**
+- order_number (URL param)
+- JWT token in header
+
+**Logic:**
+- Verify user owns this order OR user is admin
+- Fetch order details
+- Fetch order_items with designs
+- Fetch shipping_address
+- Return complete order object
+
+***
+
+### **GET /api/orders/user**
+**Parameters:**
+- JWT token in header
+- page, limit
+- status (optional filter)
+
+**Logic:**
+- Get user_id from JWT
+- Fetch all orders for this user
+- Paginate results
+- Return orders array
+
+***
+
+### **GET /api/orders/:order_id/track**
+**Parameters:**
+- order_id (URL param)
+
+**Logic:**
+- Fetch order from database
+- If qikink_order_id exists:
+  - Call QikInk API `GET /api/order?=qikink_order_id`
+  - Update local database with latest status, AWB, tracking_link
+- Return tracking info
+
+***
+
+### **POST /api/orders/sync-qikink** (Cron job - Edge Function)
+**Parameters:**
+- None (runs every 30 minutes)
+
+**Logic:**
+1. Call QikInk API `GET /api/order` (get all orders)
+2. For each QikInk order:
+   - Find matching order in database by qikink_order_id
+   - Update order_status based on QikInk status
+   - Update shipping_address with AWB, tracking_link
+   - If status = 'delivered':
+     - Update artist_earnings status to 'processing' (ready for payout)
+   - Insert into `order_status_history`
+3. Return sync summary
+
+***
+
+## **6. COLLECTION MANAGEMENT APIs**
+
+### **POST /api/collections/create**
+**Parameters:**
+- name (required)
+- description
+- slug (auto-generated from name)
+- cover_image (file upload)
+- is_public (default: true)
+- JWT token in header
+
+**Logic:**
+- Verify user is artist
+- Generate slug from name
+- Upload cover image to Supabase Storage
+- Insert into `collections` table
+- Return collection object
+
+***
+
+### **POST /api/collections/:collection_id/designs**
+**Parameters:**
+- collection_id (URL param)
+- design_id (required)
+- sort_order (optional)
+- JWT token in header
+
+**Logic:**
+- Verify artist owns collection
+- Verify artist owns design
+- Insert into `collection_designs`
+- Return status
+
+***
+
+### **GET /api/collections/:collection_id**
+**Parameters:**
+- collection_id (URL param)
+
+**Logic:**
+- Fetch collection details
+- Fetch all designs in collection (sorted by sort_order)
+- Return collection + designs
+
+***
+
+## **7. PAYMENT & PAYOUT APIs**
+
+### **POST /api/payments/razorpay/create**
+**Parameters:**
+- order_id (required)
+- amount (required)
+- JWT token in header
+
+**Logic:**
+- Verify order belongs to user
+- Create Razorpay order
+- Return razorpay_order_id for frontend
+
+***
+
+### **POST /api/payments/razorpay/verify**
+**Parameters:**
+- razorpay_order_id
+- razorpay_payment_id
+- razorpay_signature
+- order_id
+
+**Logic:**
+- Verify Razorpay signature
+- Update orders.payment_status to 'paid'
+- Trigger QikInk order creation
+- Return verification status
+
+***
+
+### **POST /api/payouts/process** (Admin Cron - Weekly/Monthly)
+**Parameters:**
+- None (automated)
+
+**Logic:**
+1. Query all `artist_earnings` WHERE status = 'processing'
+2. Group by artist_id
+3. For each artist:
+   - Sum all pending earnings
+   - Create Stripe Connect transfer
+   - Insert into `artist_payouts`
+   - Update `artist_earnings` status to 'paid'
+   - Update `artist_profiles.total_earnings`
+   - Send email notification to artist
+4. Return payout summary
+
+***
+
+### **GET /api/payouts/artist/:artist_id**
+**Parameters:**
+- artist_id (URL param)
+- JWT token in header
+
+**Logic:**
+- Verify ownership
+- Fetch all payouts from `artist_payouts`
+- Return payout history
+
+***
+
+## **8. ADMIN APIs**
+
+### **POST /api/admin/artists/:artist_id/approve**
+**Parameters:**
+- artist_id (URL param)
+- JWT token in header (admin role)
+
+**Logic:**
+- Verify admin role
+- Update `artist_profiles.is_verified` = true
+- Send email notification to artist
+- Return status
+
+***
+
+### **POST /api/admin/designs/:design_id/approve**
+**Parameters:**
+- design_id (URL param)
+- JWT token in header (admin role)
+
+**Logic:**
+- Verify admin role
+- Update `designs.is_approved` = true
+- Send notification to artist
+- Return status
+
+***
+
+### **GET /api/admin/reports**
+**Parameters:**
+- type (optional: 'copyright', 'inappropriate')
+- status (optional: 'pending', 'resolved')
+- JWT token in header (admin role)
+
+**Logic:**
+- Verify admin role
+- Fetch from `design_reports`
+- Include design + reporter info
+- Return reports
+
+***
+
+### **PUT /api/admin/reports/:report_id**
+**Parameters:**
+- report_id (URL param)
+- status ('resolved', 'rejected')
+- admin_notes
+- JWT token in header (admin role)
+
+**Logic:**
+- Update `design_reports`
+- If resolved + copyright issue: mark design as hidden
+- Return status
+
+***
+
+## **9. SOCIAL FEATURES APIs**
+
+### **GET /api/feed/following**
+**Parameters:**
+- JWT token in header
+- page, limit
+
+**Logic:**
+- Get user_id from JWT
+- Fetch all followed artists from `artist_followers`
+- Fetch recent designs from those artists
+- Sort by created_at DESC
+- Return feed of designs
+
+***
+
+### **GET /api/notifications**
+**Parameters:**
+- JWT token in header
+
+**Logic:**
+- Fetch notifications for user (new follower, design liked, order status, payout)
+- Use Supabase Realtime for live updates
+- Return notifications
+
+***
+
+## **10. AI & UTILITIES APIs**
+
+### **POST /api/ai/validate-design** (Edge Function)
+**Parameters:**
+- design_id (required)
+
+**Logic:**
+- Fetch design image from Supabase Storage
+- Call OpenAI Vision API with prompt:
+  - "Check if this design has copyright issues, inappropriate content, or low quality"
+- Parse response
+- Update `designs.ai_quality_score` and `copyright_check_status`
+- Return validation result
+
+***
+
+### **POST /api/generate-mockup** (Edge Function)
+**Parameters:**
+- design_id (required)
+- product_type ('t-shirt', 'hoodie')
+
+**Logic:**
+- Fetch design image
+- Overlay on t-shirt/hoodie template using image processing
+- Save mockup to Supabase Storage `designs/{artist_id}/mockups/{design_code}_tshirt.png`
+- Update `designs.mockup_url`
+- Return mockup URL
+
+***
+
+## **SUPABASE EDGE FUNCTIONS (Deno)**
+
+Place these in `/supabase/functions/`:
+
+1. **create-qikink-order** - Sends order to QikInk API
+2. **sync-qikink-orders** - Cron job to fetch order updates
+3. **process-artist-payouts** - Weekly payout processing
+4. **validate-design-ai** - AI design validation
+5. **generate-mockups** - Auto-generate product mockups
+6. **send-notifications** - Email/SMS notifications
+
+***
+
+## **NEXT.JS API ROUTES**
+
+Place these in `/app/api/`:
+
+All the endpoints listed above (except Edge Functions) go here. Use Next.js Route Handlers:
+
+```
+/app/api/
+  auth/
+    signup/route.ts
+    login/route.ts
+  artists/
+    apply/route.ts
+    [artist_id]/
+      follow/route.ts
+      earnings/route.ts
+  designs/
+    upload/route.ts
+    [design_id]/
+      like/route.ts
+  orders/
+    create/route.ts
+    [order_id]/
+      track/route.ts
+  payments/
+    razorpay/
+      create/route.ts
+      verify/route.ts
+```
+
+***
+
+## **AUTHENTICATION FLOW**
+
+Every protected endpoint:
+1. Extract JWT from Authorization header
+2. Verify JWT with Supabase Auth
+3. Get user_id from JWT payload
+4. Check role if needed (artist, admin)
+5. Proceed with request
+
+***
+
+## **ERROR HANDLING STANDARDS**
+
+All APIs return consistent format:[3]
+
+**Success:**
+```json
+{
+  "success": true,
+  "data": {...},
+  "message": "Order created successfully"
+}
+```
+
+**Error:**
+```json
+{
+  "success": false,
+  "error": {
+    "code": "DESIGN_NOT_FOUND",
+    "message": "Design with this ID does not exist"
+  }
+}
+```
+
+***
+
+## **RATE LIMITING**
+
+Use Redis (Upstash) for:
+- Auth endpoints: 5 requests/minute
+- Design upload: 10 requests/hour
+- Order creation: 20 requests/hour
+- General APIs: 100 requests/minute
+
+***
+
+## **PAGINATION STANDARD**
+
+All list endpoints return:[1]
+```json
+{
+  "data": [...],
+  "pagination": {
+    "page": 1,
+    "limit": 20,
+    "total": 150,
+    "pages": 8
+  }
+}
+```
+
+***
