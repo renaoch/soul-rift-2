@@ -4,19 +4,38 @@ import { createServerSupabaseClient } from '@/app/lib/supabase/server';
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
-    
-    // Filters
-    const priceMin = searchParams.get('price_min');
-    const priceMax = searchParams.get('price_max');
-    const style = searchParams.get('style');
-    const color = searchParams.get('color');
-    const size = searchParams.get('size');
-    const sortBy = searchParams.get('sort') || 'popular';
-    const page = parseInt(searchParams.get('page') || '1');
-    const limit = parseInt(searchParams.get('limit') || '12');
+
+    // UI-style params
+    const q = searchParams.get('q') || '';
+    const sort = searchParams.get('sort') || 'popular'; // popular | newest | price_asc | price_desc
+    const cat = searchParams.get('cat') || 'all'; // optional mapping to style/category
+    const priceBucket = searchParams.get('price') || ''; // budget|standard|premium|luxury (optional)
+    const stylesParam = (searchParams.get('styles') || '').split(',').filter(Boolean);
+    const colorsParam = (searchParams.get('colors') || '').split(',').filter(Boolean);
+    const sizesParam = (searchParams.get('sizes') || '').split(',').filter(Boolean);
+    const page = parseInt(searchParams.get('page') || '1', 10);
+    const limit = parseInt(searchParams.get('limit') || '12', 10);
+
+    // Map price bucket to min/max (edit ranges as desired)
+    let priceMin: number | null = null;
+    let priceMax: number | null = null;
+    switch (priceBucket) {
+      case 'budget':
+        priceMin = 0; priceMax = 500; break;
+      case 'standard':
+        priceMin = 500; priceMax = 1000; break;
+      case 'premium':
+        priceMin = 1000; priceMax = 2000; break;
+      case 'luxury':
+        priceMin = 2000; priceMax = null; break;
+      default:
+        // leave null
+        break;
+    }
 
     const supabase = await createServerSupabaseClient();
 
+    // Base query: public facing, only active products
     let query = supabase
       .from('products')
       .select(`
@@ -34,27 +53,40 @@ export async function GET(request: NextRequest) {
             )
           )
         )
-      `)
+      `, { count: 'exact' })
       .eq('is_active', true);
 
-    // Apply filters
-    if (priceMin) query = query.gte('selling_price', parseFloat(priceMin));
-    if (priceMax) query = query.lte('selling_price', parseFloat(priceMax));
-    if (style) query = query.eq('style', style);
-    if (color) query = query.eq('color', color);
-    if (size) query = query.eq('size', size);
+    // Search across name and SKU
+    if (q) {
+      query = query.or(`name.ilike.%${q}%,sku.ilike.%${q}%`);
+    }
+
+    // Category → map to style when provided
+    if (cat && cat !== 'all') {
+      query = query.eq('style', cat);
+    }
+
+    // Price bucket
+    if (priceMin !== null) query = query.gte('selling_price', priceMin);
+    if (priceMax !== null) query = query.lte('selling_price', priceMax);
+
+    // Multi-filters
+    if (stylesParam.length) query = query.in('style', stylesParam);
+    if (colorsParam.length) query = query.in('color', colorsParam.map(capitalizeFirst));
+    if (sizesParam.length) query = query.in('size', sizesParam);
 
     // Sorting
-    switch (sortBy) {
+    switch (sort) {
       case 'popular':
         query = query.order('view_count', { ascending: false });
         break;
       case 'newest':
         query = query.order('created_at', { ascending: false });
         break;
-      case 'price_low':
+      case 'price_asc':
         query = query.order('selling_price', { ascending: true });
         break;
+      case 'price_desc':
       case 'price_high':
         query = query.order('selling_price', { ascending: false });
         break;
@@ -77,27 +109,35 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Transform data to match your frontend structure
-    const transformedProducts = products?.map(product => ({
-      id: product.id,
-      name: product.name,
-      artist: product.product_designs?.[0]?.designs?.artist_profiles?.display_name || 'Unknown',
-      artist_id: product.product_designs?.[0]?.designs?.artist_id,
-      price: product.selling_price,
-      image: product.product_designs?.[0]?.designs?.design_url || product.image_url,
-      thumbnail: product.product_designs?.[0]?.designs?.thumbnail_url,
-      likes: product.like_count || 0,
-      views: product.view_count || 0,
-      color: product.color || '#ff6b35',
-      badge: product.badge,
-      size: product.size,
-      style: product.style,
-      sku: product.sku,
-    }));
+    // Transform with In‑House fallbacks
+    const transformed = (products || []).map((p: any) => {
+      const rel = p.product_designs?.[0]?.designs;
+      const artistName = rel?.artist_profiles?.display_name || 'In‑House Design';
+      const artistId = rel?.artist_id || null;
+      const image = rel?.design_url || p.image_url || '/placeholder.png';
+      const thumbnail = rel?.thumbnail_url || p.image_url || null;
+
+      return {
+        id: p.id,
+        name: p.name,
+        artist: artistName,
+        artist_id: artistId,
+        price: p.selling_price,
+        image,
+        thumbnail,
+        likes: p.like_count || 0,
+        views: p.view_count || 0,
+        color: p.color || '#ff6b35',
+        badge: p.badge,
+        size: p.size,
+        style: p.style,
+        sku: p.sku,
+      };
+    });
 
     return NextResponse.json({
       success: true,
-      products: transformedProducts,
+      products: transformed,
       pagination: {
         page,
         limit,
@@ -105,11 +145,16 @@ export async function GET(request: NextRequest) {
         pages: Math.ceil((count || 0) / limit),
       },
     });
-  } catch (error) {
-    console.error('Products API error:', error);
+  } catch (e: any) {
+    console.error('Products API error:', e?.message || e);
     return NextResponse.json(
       { success: false, error: { message: 'Failed to fetch products' } },
       { status: 500 }
     );
   }
+}
+
+function capitalizeFirst(s: string) {
+  if (!s) return s;
+  return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
 }

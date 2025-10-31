@@ -24,7 +24,12 @@ export async function POST(request: NextRequest) {
       .digest('hex');
 
     const isAuthentic = expectedSignature === razorpay_signature;
-
+if(!isAuthentic){
+  return NextResponse.json(
+    { success: false, error: { message: 'Invalid signature' } },
+    { status: 400 }
+  );  
+}
     if (isAuthentic) {
       // Update order status
       await supabase
